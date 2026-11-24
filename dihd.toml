@@ -1,0 +1,24 @@
+debug = true
+
+[dns]
+max_ttl = "1h"
+min_ttl = "15s"
+neg_ttl = "30s"
+
+[server]
+network = "udp" # udp or tcp
+address = "0.0.0.0:53"
+timeout = "30s"
+upstreams = [
+        "https://cloudflare-dns.com/dns-query",
+        "https://dns.google/dns-query",
+        "https://dns.quad9.net/dns-query",
+    ]
+reuse_port = true
+reuse_addr = true
+blocklist = "/usr/local/etc/dihd.d/blocklist.bin"
+
+[server.bootstrap]
+"dns.quad9.net" = ["9.9.9.9", "149.112.112.112"]
+"dns.google" = ["8.8.4.4", "8.8.8.8"]
+"cloudflare-dns.com" = ["104.16.249.249", "104.16.248.249"]

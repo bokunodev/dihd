@@ -1,0 +1,13 @@
+[Unit]
+Description=DHS INSIDE HTTPS proxy daemon
+Wants=network.target
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dihd -config /usr/local/etc/dihd.d/dihd.toml
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
