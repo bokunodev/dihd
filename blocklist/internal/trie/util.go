@@ -1,5 +1,7 @@
 package trie
 
+import "slices"
+
 func boolToByte(b bool) uint8 {
 	if b {
 		return 1
@@ -16,4 +18,14 @@ func commonPrefixLenBytes(a, b []byte) int {
 		}
 	}
 	return n
+}
+
+func Normalize(s string) string {
+	buf := []byte(s)
+	slices.Reverse(buf)
+	if buf[0] != '.' {
+		buf = append([]byte{'.'}, buf...)
+	}
+
+	return string(buf)
 }

@@ -111,23 +111,13 @@ var domains = []string{
 	"elegantthemes.com",
 }
 
-func normalize(s string) string {
-	buf := []byte(s)
-	slices.Reverse(buf)
-	if buf[0] != '.' {
-		buf = append([]byte{'.'}, buf...)
-	}
-
-	return string(buf)
-}
-
 func TestTrie(t *testing.T) {
 	slices.Sort(domains)
 
 	root := &Node{}
 
 	for _, domain := range domains {
-		Insert(root, normalize(domain))
+		Insert(root, Normalize(domain))
 	}
 
 	totalSize := root.Size() + headerSize
@@ -137,7 +127,7 @@ func TestTrie(t *testing.T) {
 	}
 
 	for _, domain := range domains {
-		if !Search(slab, []byte(normalize(domain))) {
+		if !Search(slab, []byte(Normalize(domain))) {
 			t.Fatalf("lookup failed; domain: %s", domain)
 		}
 	}
@@ -161,7 +151,7 @@ func BenchmarkTrie(b *testing.B) {
 			b.Fatalf("an error occured while loading hosts file, error: %v", err)
 		}
 
-		Insert(root, normalize(scn.Text()))
+		Insert(root, Normalize(scn.Text()))
 	}
 
 	testKeywords := [][]byte{

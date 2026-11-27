@@ -38,6 +38,8 @@ func main() {
 			continue
 		}
 
+		domain = trie.Normalize(domain)
+
 		trie.Insert(root, domain)
 	}
 
