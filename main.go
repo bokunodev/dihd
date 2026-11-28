@@ -69,7 +69,8 @@ func main() {
 		maxTTL: int(k.MustDuration("dns.max_ttl").Seconds()),
 		minTTL: int(k.MustDuration("dns.min_ttl").Seconds()),
 		negTTL: int(k.MustDuration("dns.neg_ttl").Seconds()),
-		debug:  k.Bool("debug"),
+
+		msgPool: &sync.Pool{New: func() any { return &dns.Msg{} }},
 	}
 
 	server := dns.Server{

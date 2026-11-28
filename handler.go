@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,7 +30,7 @@ type Handler struct {
 	minTTL int
 	negTTL int
 
-	debug bool
+	msgPool *sync.Pool
 }
 
 type upstreams struct {
@@ -46,21 +47,24 @@ func (u *upstreams) next() string {
 	return u.urls[i%uint32(len(u.urls))]
 }
 
-func (handler *Handler) ServeDNS(w dns.ResponseWriter, msg *dns.Msg) {
-	if len(msg.Question) == 0 {
-		_ = w.WriteMsg(msg.SetReply(msg).SetRcodeFormatError(msg))
+func (handler *Handler) ServeDNS(w dns.ResponseWriter, reqMsg *dns.Msg) {
+	if len(reqMsg.Question) == 0 {
+		_ = w.WriteMsg(reqMsg.SetReply(reqMsg).SetRcodeFormatError(reqMsg))
 		return
 	}
 
-	if len(msg.Question) > 1 {
-		_ = w.WriteMsg(msg.SetReply(msg).SetRcode(msg, dns.RcodeNotImplemented))
+	if len(reqMsg.Question) > 1 {
+		_ = w.WriteMsg(reqMsg.SetReply(reqMsg).SetRcode(reqMsg, dns.RcodeNotImplemented))
 		return
 	}
 
-	domain := dns.CanonicalName(msg.Question[0].Name)
+	reply := handler.msgPool.Get().(*dns.Msg)
+	defer handler.msgPool.Put(reply)
+
+	domain := dns.CanonicalName(reqMsg.Question[0].Name)
 	if handler.blocklist.Lookup(domain) {
-		reply := msg.SetReply(msg).SetRcode(msg, dns.RcodeSuccess)
-		question := msg.Question[0]
+		reply = reply.SetReply(reqMsg).SetRcode(reqMsg, dns.RcodeSuccess)
+		question := reqMsg.Question[0]
 
 		switch question.Qtype {
 		case dns.TypeA:
@@ -84,7 +88,7 @@ func (handler *Handler) ServeDNS(w dns.ResponseWriter, msg *dns.Msg) {
 				AAAA: net.IPv6zero,
 			})
 		default:
-			reply = reply.SetRcode(msg, dns.RcodeNameError)
+			reply = reply.SetRcode(reqMsg, dns.RcodeNameError)
 		}
 
 		reply.Authoritative = true
@@ -92,16 +96,15 @@ func (handler *Handler) ServeDNS(w dns.ResponseWriter, msg *dns.Msg) {
 		return
 	}
 
-	key := fmt.Appendf(nil, "%s|%d|%d", domain, msg.Question[0].Qtype, msg.Question[0].Qclass)
+	key := fmt.Appendf(nil, "%s|%d|%d", domain, reqMsg.Question[0].Qtype, reqMsg.Question[0].Qclass)
 	val, err := handler.cache.Get(key)
 	if err == nil {
 		slog.Debug("cache hit", "key", key)
-		reply := &dns.Msg{}
 		err = reply.Unpack(val)
-		reply = reply.SetReply(msg)
+		reply = reply.SetReply(reqMsg)
 		if err != nil {
 			slog.Error("unable to unpack reply from cache", "reason", err)
-			replyWithServerFailure(w, msg)
+			replyWithServerFailure(w, reqMsg)
 			return
 		}
 
@@ -119,10 +122,10 @@ func (handler *Handler) ServeDNS(w dns.ResponseWriter, msg *dns.Msg) {
 	}
 
 	slog.Debug("cache miss", "key", key)
-	payloadBuf, err := msg.Pack()
+	payloadBuf, err := reqMsg.Pack()
 	if err != nil {
 		slog.Error("unable to pack dns message", "reason", err)
-		replyWithServerFailure(w, msg)
+		replyWithServerFailure(w, reqMsg)
 		return
 	}
 
@@ -132,7 +135,7 @@ func (handler *Handler) ServeDNS(w dns.ResponseWriter, msg *dns.Msg) {
 	// retry 5 times
 	for attempt := range 5 {
 		upstream = handler.upstreams.next()
-		responseBuf, err = doRequest(handler.ctx, handler.client, upstream, payloadBuf, handler.debug)
+		responseBuf, err = doRequest(handler.ctx, handler.client, upstream, payloadBuf)
 		if err == nil {
 			lastErr = nil
 			break
@@ -144,23 +147,22 @@ func (handler *Handler) ServeDNS(w dns.ResponseWriter, msg *dns.Msg) {
 
 	if lastErr != nil {
 		slog.Error("failed to resolve query", "reason", err, "upstream", upstream)
-		replyWithServerFailure(w, msg)
+		replyWithServerFailure(w, reqMsg)
 		return
 	}
 
-	reply := &dns.Msg{}
 	err = reply.Unpack(responseBuf)
-	reply.SetReply(msg)
+	reply = reply.SetReply(reqMsg)
 	if err != nil {
 		slog.Error("unable to unpack dns response from upstream", "reason", err)
-		replyWithServerFailure(w, msg)
+		replyWithServerFailure(w, reqMsg)
 		return
 	}
 
 	replyBuf, err := reply.Pack()
 	if err != nil {
 		slog.Error("unable to pack dns reply", "reason", err)
-		replyWithServerFailure(w, msg)
+		replyWithServerFailure(w, reqMsg)
 		return
 	}
 
@@ -266,7 +268,7 @@ func newDoHClient(bootstrap map[string][]string, timeout time.Duration) *http.Cl
 	}
 }
 
-func doRequest(ctx context.Context, client *http.Client, url string, payload []byte, debug bool) ([]byte, error) {
+func doRequest(ctx context.Context, client *http.Client, url string, payload []byte) ([]byte, error) {
 	method := http.MethodPost
 
 	slog.Debug("request", "method", method, "url", url)
@@ -286,7 +288,10 @@ func doRequest(ctx context.Context, client *http.Client, url string, payload []b
 		return nil, err
 	}
 
-	defer response.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+	}()
 
 	if response.StatusCode != http.StatusOK {
 		slog.Warn("upstream error status code", "code", response.StatusCode)
