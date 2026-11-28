@@ -28,6 +28,8 @@ type Handler struct {
 	maxTTL int
 	minTTL int
 	negTTL int
+
+	debug bool
 }
 
 type upstreams struct {
@@ -93,6 +95,7 @@ func (handler *Handler) ServeDNS(w dns.ResponseWriter, msg *dns.Msg) {
 	key := fmt.Appendf(nil, "%s|%d|%d", domain, msg.Question[0].Qtype, msg.Question[0].Qclass)
 	val, err := handler.cache.Get(key)
 	if err == nil {
+		slog.Debug("cache hit", "key", key)
 		reply := &dns.Msg{}
 		err = reply.Unpack(val)
 		reply = reply.SetReply(msg)
@@ -115,6 +118,7 @@ func (handler *Handler) ServeDNS(w dns.ResponseWriter, msg *dns.Msg) {
 		slog.Error("unable to get cache value", "reason", err)
 	}
 
+	slog.Debug("cache miss", "key", key)
 	payloadBuf, err := msg.Pack()
 	if err != nil {
 		slog.Error("unable to pack dns message", "reason", err)
@@ -124,20 +128,22 @@ func (handler *Handler) ServeDNS(w dns.ResponseWriter, msg *dns.Msg) {
 
 	var responseBuf []byte
 	var lastErr error
+	var upstream string
 	// retry 5 times
 	for attempt := range 5 {
-		responseBuf, err = doRequest(handler.ctx, handler.client, handler.upstreams.next(), payloadBuf)
-		if err != nil {
-			slog.Warn("DOH query failed", "reason", err, "attempt", attempt)
-			lastErr = err
-			continue
+		upstream = handler.upstreams.next()
+		responseBuf, err = doRequest(handler.ctx, handler.client, upstream, payloadBuf, handler.debug)
+		if err == nil {
+			lastErr = nil
+			break
 		}
 
-		lastErr = nil
+		slog.Warn("DOH query failed", "reason", err, "attempt", attempt, "upstream", upstream)
+		lastErr = err
 	}
 
 	if lastErr != nil {
-		slog.Error("failed to resolve query", "reason", err)
+		slog.Error("failed to resolve query", "reason", err, "upstream", upstream)
 		replyWithServerFailure(w, msg)
 		return
 	}
@@ -260,8 +266,12 @@ func newDoHClient(bootstrap map[string][]string, timeout time.Duration) *http.Cl
 	}
 }
 
-func doRequest(ctx context.Context, client *http.Client, url string, payload []byte) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+func doRequest(ctx context.Context, client *http.Client, url string, payload []byte, debug bool) ([]byte, error) {
+	method := http.MethodPost
+
+	slog.Debug("request", "method", method, "url", url)
+
+	request, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(payload))
 	if err != nil {
 		slog.Error("unable to construct http request", "reason", err)
 		return nil, err
